@@ -8,7 +8,7 @@ import shlex
 import sys
 from pathlib import Path
 
-from dotenv import load_dotenv
+from dotenv import find_dotenv, load_dotenv
 
 from patchpilot.agent import run_agent
 from patchpilot.tools import Workspace
@@ -31,7 +31,8 @@ def main(argv: list[str] | None = None) -> int:
     if not project.is_dir():
         parser.error(f"{project} is not a directory")
 
-    load_dotenv()
+    # Look for .env in the directory patchpilot is run from, not where it's installed.
+    load_dotenv(find_dotenv(usecwd=True))
     ws = Workspace(root=project, test_command=shlex.split(args.test_command))
 
     def log_tool_call(name: str, tool_input: dict) -> None:
