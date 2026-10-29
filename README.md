@@ -9,7 +9,9 @@
 
 Dependabot and Renovate bump version numbers. When the new version breaks your build, the fix is still on you. patchpilot does that part: it upgrades the package inside a sandbox, runs your tests, reads the failures and the changelog, edits your code until the tests pass, and hands you a reviewable PR.
 
-<!-- TODO: demo GIF here: `patchpilot upgrade . pydantic --pr` → PR appears -->
+![patchpilot upgrading pydantic 1 → 2 and opening a pull request](https://raw.githubusercontent.com/ilmeedesilva/patchpilot/main/docs/demo.gif)
+
+👉 **[See the pull request it opened](https://github.com/ilmeedesilva/patchpilot-demo/pull/1)**: the description, the diff, and the verification note were all written by patchpilot.
 
 ```console
 $ patchpilot upgrade . pydantic --pr
@@ -26,7 +28,7 @@ $ patchpilot upgrade . pydantic --pr
   → write_file {"path": "app/models.py"}
   → run_tests {}                      # passes
 • Re-running the tests to verify the agent's work
-• Pull request: https://github.com/<you>/<repo>/pull/1
+• Pull request: https://github.com/ilmeedesilva/patchpilot-demo/pull/1
 ```
 
 The PR description is written by the agent, and includes:
