@@ -12,8 +12,10 @@ import shlex
 import sys
 from pathlib import Path
 
+import anthropic
 from dotenv import find_dotenv, load_dotenv
 
+from patchpilot.agent import MODEL
 from patchpilot.analyze import analyze
 from patchpilot.github import GitHubError
 from patchpilot.sandbox import DEFAULT_IMAGE, SandboxError
@@ -25,6 +27,34 @@ def log_tool_call(name: str, tool_input: dict) -> None:
     # File contents can be long; show just the path for writes.
     shown = {k: v for k, v in tool_input.items() if k not in ("content", "old_text", "new_text")}
     print(f"  → {name} {json.dumps(shown)}", file=sys.stderr)
+
+
+def explain_api_error(e: anthropic.AnthropicError) -> str:
+    """Turn an Anthropic SDK error into one sentence the user can act on."""
+    detail = str(e)
+    if isinstance(e, anthropic.APIStatusError) and isinstance(e.body, dict):
+        detail = e.body.get("error", {}).get("message", detail)
+
+    if isinstance(e, anthropic.BadRequestError) and "credit balance" in detail:
+        return (
+            "Your Anthropic account is out of credit. Add some at "
+            "https://console.anthropic.com/settings/billing and run patchpilot again."
+        )
+    if isinstance(e, anthropic.AuthenticationError):
+        return (
+            "Your Anthropic API key was rejected. Check ANTHROPIC_API_KEY in your .env file "
+            "(keys are at https://console.anthropic.com/settings/keys)."
+        )
+    if isinstance(e, anthropic.PermissionDeniedError):
+        return f"Your API key doesn't have access to {MODEL}: {detail}"
+    if isinstance(e, anthropic.RateLimitError):
+        return "The Anthropic API is rate-limiting this key. Wait a minute and try again."
+    if isinstance(e, anthropic.APIConnectionError):
+        return "Couldn't reach the Anthropic API. Check your internet connection and try again."
+    if isinstance(e, anthropic.APIStatusError):
+        return f"The Anthropic API returned an error ({e.status_code}): {detail}"
+    # e.g. no API key configured at all
+    return f"Couldn't call the Anthropic API: {detail}"
 
 
 def log_status(message: str) -> None:
@@ -98,6 +128,9 @@ def main(argv: list[str] | None = None) -> int:
         )
     except (RuntimeError, UpgradeError, SandboxError, GitHubError) as e:
         print(f"patchpilot: {e}", file=sys.stderr)
+        return 1
+    except anthropic.AnthropicError as e:
+        print(f"patchpilot: {explain_api_error(e)}", file=sys.stderr)
         return 1
 
     print(result.report)
