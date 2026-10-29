@@ -15,6 +15,7 @@ from pathlib import Path
 from dotenv import find_dotenv, load_dotenv
 
 from patchpilot.analyze import analyze
+from patchpilot.github import GitHubError
 from patchpilot.sandbox import DEFAULT_IMAGE, SandboxError
 from patchpilot.tools import Workspace
 from patchpilot.upgrade import UpgradeError, upgrade
@@ -50,6 +51,11 @@ def main(argv: list[str] | None = None) -> int:
         default=DEFAULT_IMAGE,
         help="Docker image to run the project in; pick one matching your Python version "
         "(default: %(default)s).",
+    )
+    upgrade_p.add_argument(
+        "--pr",
+        action="store_true",
+        help="Push the branch and open a GitHub pull request (needs the gh CLI, logged in).",
     )
     upgrade_p.add_argument(
         "--no-docker",
@@ -88,8 +94,9 @@ def main(argv: list[str] | None = None) -> int:
             on_tool_call=log_tool_call,
             use_docker=not args.no_docker,
             image=args.image,
+            open_pr=args.pr,
         )
-    except (RuntimeError, UpgradeError, SandboxError) as e:
+    except (RuntimeError, UpgradeError, SandboxError, GitHubError) as e:
         print(f"patchpilot: {e}", file=sys.stderr)
         return 1
 
@@ -100,7 +107,10 @@ def main(argv: list[str] | None = None) -> int:
         return 1
     verdict = "✅ tests pass" if result.tests_passed else "❌ tests still failing"
     log_status(f"Committed to branch {result.branch} ({verdict})")
-    log_status(f"Review it with: git diff HEAD...{result.branch}")
+    if result.pr_url:
+        log_status(f"Pull request: {result.pr_url}")
+    else:
+        log_status(f"Review it with: git diff HEAD...{result.branch}")
     return 0 if result.tests_passed else 1
 
 

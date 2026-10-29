@@ -24,7 +24,7 @@ Tools like Dependabot bump version numbers, but when an upgrade breaks your buil
 - [x] Run the test suite and report a baseline
 - [x] Upgrade one dependency and edit code to fix breakages, in an isolated git worktree
 - [x] Run the project's code in a locked-down Docker container
-- [ ] Open a pull request with the changes
+- [x] Open a pull request with the agent's report (`--pr`)
 
 ## Getting started
 
@@ -58,6 +58,14 @@ What happens:
 2. It starts a Docker sandbox (see below), installs your project into it and checks that the tests pass.
 3. The agent upgrades the package, runs the tests, reads the failures and the package's changelog, and edits the code until the tests pass.
 4. patchpilot re-runs the tests itself, rather than trusting the agent's word, then commits the changes to the branch. The commit message is the agent's report: what broke, how it was fixed, and what still needs your attention.
+
+Or let patchpilot open the pull request for you:
+
+```bash
+patchpilot upgrade . pydantic --pr
+```
+
+This pushes the branch and opens a PR whose description is the agent's report, plus a note confirming that patchpilot re-ran the tests itself. If the tests still fail, the PR is opened as a **draft** so it can't be merged by accident. `--pr` uses the [GitHub CLI](https://cli.github.com/) (`gh auth login` once), so patchpilot never handles a GitHub token itself. It checks that GitHub is set up *before* the agent starts, so a missing login doesn't waste a run.
 
 If you like the result, merge the branch. If you don't, delete it: `git branch -D patchpilot/upgrade-pydantic`.
 
