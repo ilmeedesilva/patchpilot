@@ -7,6 +7,7 @@ on a new `patchpilot/upgrade-<package>` branch, is left behind.
 
 from __future__ import annotations
 
+import os
 import shutil
 import subprocess
 import sys
@@ -17,7 +18,15 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from patchpilot.agent import WEB_FETCH_TOOL, run_agent
-from patchpilot.tools import READ_TOOL_SCHEMAS, WRITE_TOOL_SCHEMAS, Workspace, run_tests
+from patchpilot.tools import (
+    IGNORED_DIRS,
+    READ_TOOL_SCHEMAS,
+    WRITE_TOOL_SCHEMAS,
+    Workspace,
+    collect_dependencies,
+    normalize_name,
+    run_tests,
+)
 
 DEFAULT_TEST_COMMAND = ["python", "-m", "pytest", "-q"]
 
@@ -106,6 +115,42 @@ def install_project(python: Path, project: Path, test_command: list[str]) -> Non
             _pip(python, ["pytest"], project)
 
 
+def _declares(directory: Path, package: str) -> list[str]:
+    """Which of the directory's dependency files declare the package."""
+    wanted = normalize_name(package)
+    return [
+        source
+        for source, deps in collect_dependencies(directory).items()
+        if any(normalize_name(d["name"]) == wanted for d in deps)
+    ]
+
+
+def check_declared(project: Path, package: str, repo_root: Path) -> None:
+    """Fail early, with a hint, if the package isn't a dependency of this project.
+
+    Otherwise the agent would run against a test suite that never exercises the package,
+    and "tests pass" would mean nothing.
+    """
+    if _declares(project, package):
+        return
+    elsewhere = []
+    for dep_file in sorted(
+        [*repo_root.rglob("requirements*.txt"), *repo_root.rglob("pyproject.toml")]
+    ):
+        rel = dep_file.relative_to(repo_root)
+        if any(part in IGNORED_DIRS for part in rel.parts) or dep_file.parent == project:
+            continue
+        if dep_file.parent not in elsewhere and _declares(dep_file.parent, package):
+            elsewhere.append(dep_file.parent)
+
+    message = f"{package} isn't a dependency of {project}."
+    if elsewhere:
+        dirs = [os.path.relpath(d) for d in elsewhere]
+        message += "\nIt's declared in: " + ", ".join(dirs)
+        message += f"\nTry: patchpilot upgrade {dirs[0]} {package}"
+    raise UpgradeError(message)
+
+
 def upgrade(
     project: Path,
     package: str,
@@ -117,6 +162,7 @@ def upgrade(
     project = project.resolve()
     repo_root = Path(_git("rev-parse", "--show-toplevel", cwd=project)).resolve()
     project_rel = project.relative_to(repo_root)
+    check_declared(project, package, repo_root)
     branch = f"patchpilot/upgrade-{package.lower()}"
 
     exists = subprocess.run(

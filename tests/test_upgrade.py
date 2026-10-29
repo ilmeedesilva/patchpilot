@@ -20,9 +20,16 @@ def repo(tmp_path):
     git("config", "user.name", "Test User", cwd=tmp_path)
     git("config", "user.email", "test@example.com", cwd=tmp_path)
     (tmp_path / "app.py").write_text("VERSION = 1\n")
+    (tmp_path / "requirements.txt").write_text("demo==1.0\n")
     git("add", ".", cwd=tmp_path)
     git("commit", "-q", "-m", "init", cwd=tmp_path)
     return tmp_path
+
+
+@pytest.fixture(autouse=True)
+def skip_install(monkeypatch):
+    # "demo" isn't a real PyPI package; installing the project is covered by the live demo run.
+    monkeypatch.setattr(upgrade_mod, "install_project", lambda *args: None)
 
 
 def fake_agent(edit=True):
@@ -71,3 +78,21 @@ def test_upgrade_refuses_existing_branch(repo):
 def test_upgrade_requires_git_repo(tmp_path):
     with pytest.raises(UpgradeError, match="rev-parse"):
         upgrade(tmp_path, "demo", test_command=PASSING_TESTS)
+
+
+def test_upgrade_points_to_the_folder_that_declares_the_package(repo, monkeypatch):
+    sub = repo / "examples" / "web"
+    sub.mkdir(parents=True)
+    (sub / "requirements.txt").write_text("Flask_Login>=0.6\n")
+    monkeypatch.chdir(repo)
+    with pytest.raises(UpgradeError) as excinfo:
+        upgrade(repo, "flask-login", test_command=PASSING_TESTS)
+    message = str(excinfo.value)
+    assert "isn't a dependency" in message
+    assert "Try: patchpilot upgrade examples/web flask-login" in message
+
+
+def test_upgrade_refuses_package_declared_nowhere(repo):
+    with pytest.raises(UpgradeError, match="isn't a dependency") as excinfo:
+        upgrade(repo, "numpy", test_command=PASSING_TESTS)
+    assert "Try:" not in str(excinfo.value)

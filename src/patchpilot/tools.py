@@ -136,10 +136,15 @@ def parse_requirements(text: str) -> list[dict[str, str]]:
     return deps
 
 
-def read_dependencies(ws: Workspace) -> str:
-    """Collect declared dependencies from requirements*.txt and pyproject.toml."""
+def normalize_name(name: str) -> str:
+    """PyPI treats 'Foo_Bar', 'foo-bar' and 'foo.bar' as the same package (PEP 503)."""
+    return re.sub(r"[-_.]+", "-", name).lower()
+
+
+def collect_dependencies(root: Path) -> dict[str, list[dict[str, str]]]:
+    """Declared dependencies from requirements*.txt and pyproject.toml, keyed by source."""
     found: dict[str, list[dict[str, str]]] = {}
-    root = ws.root.resolve()
+    root = root.resolve()
 
     for req_file in sorted(root.glob("requirements*.txt")):
         found[req_file.name] = parse_requirements(req_file.read_text())
@@ -155,7 +160,11 @@ def read_dependencies(ws: Workspace) -> str:
             found[f"pyproject.toml [optional-dependencies.{group}]"] = parse_requirements(
                 "\n".join(reqs)
             )
+    return found
 
+
+def read_dependencies(ws: Workspace) -> str:
+    found = collect_dependencies(ws.root)
     if not found:
         raise ToolError("No requirements*.txt or pyproject.toml found in the project.")
     return json.dumps(found, indent=2)
