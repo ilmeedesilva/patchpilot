@@ -12,7 +12,7 @@ import subprocess
 import tomllib
 import urllib.error
 import urllib.request
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 MAX_OUTPUT_CHARS = 20_000
@@ -20,6 +20,10 @@ IGNORED_DIRS = {".git", ".venv", "venv", "__pycache__", "node_modules", ".pytest
 
 # Matches "name", "name==1.2", "name[extra]>=1.0,<2", etc. Group 1 is the name, group 3 the spec.
 REQUIREMENT_RE = re.compile(r"^\s*([A-Za-z0-9][A-Za-z0-9._-]*)\s*(\[[^\]]*\])?\s*([^;#]*)")
+# What pip_install accepts: a name, optional extras, optional version specifier. No flags or URLs.
+INSTALLABLE_RE = re.compile(
+    r"[A-Za-z0-9][A-Za-z0-9._-]*(\[[A-Za-z0-9._,-]+\])?([<>=!~]=?[0-9A-Za-z.*,<>=!~]+)?"
+)
 
 
 class ToolError(Exception):
@@ -30,12 +34,21 @@ class ToolError(Exception):
 class Workspace:
     root: Path
     test_command: list[str]
+    # Python interpreter of the isolated environment; None means use whatever is on PATH.
+    python: Path | None = None
+    changed_files: set[str] = field(default_factory=set)
 
     def resolve(self, relative_path: str) -> Path:
         path = (self.root / relative_path).resolve()
         if not path.is_relative_to(self.root.resolve()):
             raise ToolError(f"Path '{relative_path}' is outside the project directory.")
         return path
+
+    def command(self, cmd: list[str]) -> list[str]:
+        """Point a leading `python` at the workspace's own interpreter."""
+        if self.python and cmd and cmd[0] in ("python", "python3"):
+            return [str(self.python), *cmd[1:]]
+        return cmd
 
 
 def _truncate(text: str) -> str:
@@ -44,6 +57,20 @@ def _truncate(text: str) -> str:
     # Test failures usually matter most at the end of the output, so keep the tail.
     dropped = len(text) - MAX_OUTPUT_CHARS
     return f"[... {dropped} characters truncated ...]\n" + text[-MAX_OUTPUT_CHARS:]
+
+
+def _run(cmd: list[str], cwd: Path, timeout: int) -> subprocess.CompletedProcess[str]:
+    try:
+        return subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, timeout=timeout)
+    except FileNotFoundError as e:
+        raise ToolError(f"Command not found: {cmd[0]}") from e
+    except subprocess.TimeoutExpired as e:
+        raise ToolError(f"Command timed out after {timeout} seconds.") from e
+
+
+def _format_result(proc: subprocess.CompletedProcess[str]) -> str:
+    status = "PASSED" if proc.returncode == 0 else f"FAILED (exit code {proc.returncode})"
+    return _truncate(f"{status}\n\n--- stdout ---\n{proc.stdout}\n--- stderr ---\n{proc.stderr}")
 
 
 def list_files(ws: Workspace, directory: str = ".") -> str:
@@ -64,6 +91,37 @@ def read_file(ws: Workspace, path: str) -> str:
     if not target.is_file():
         raise ToolError(f"File '{path}' does not exist.")
     return _truncate(target.read_text(errors="replace"))
+
+
+def _writable(ws: Workspace, path: str) -> Path:
+    target = ws.resolve(path)
+    rel = target.relative_to(ws.root.resolve())
+    if any(part in IGNORED_DIRS for part in rel.parts):
+        raise ToolError(f"Refusing to write inside '{rel.parts[0]}'.")
+    return target
+
+
+def write_file(ws: Workspace, path: str, content: str) -> str:
+    target = _writable(ws, path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(content)
+    ws.changed_files.add(path)
+    return f"Wrote {len(content)} characters to {path}."
+
+
+def edit_file(ws: Workspace, path: str, old_text: str, new_text: str) -> str:
+    target = _writable(ws, path)
+    if not target.is_file():
+        raise ToolError(f"File '{path}' does not exist. Use write_file to create it.")
+    text = target.read_text()
+    count = text.count(old_text)
+    if count == 0:
+        raise ToolError(f"old_text was not found in {path}. Read the file and copy it exactly.")
+    if count > 1:
+        raise ToolError(f"old_text appears {count} times in {path}. Include more context.")
+    target.write_text(text.replace(old_text, new_text))
+    ws.changed_files.add(path)
+    return f"Edited {path}."
 
 
 def parse_requirements(text: str) -> list[dict[str, str]]:
@@ -126,58 +184,64 @@ def get_latest_version(ws: Workspace, package: str) -> str:
     )
 
 
-def run_tests(ws: Workspace) -> str:
-    try:
-        proc = subprocess.run(
-            ws.test_command,
-            cwd=ws.root,
-            capture_output=True,
-            text=True,
-            timeout=600,
+def pip_install(ws: Workspace, requirement: str) -> str:
+    """Install one requirement (e.g. 'pydantic==2.9.2') into the workspace's environment."""
+    if ws.python is None:
+        raise ToolError("Installing packages is only available in upgrade mode.")
+    if not INSTALLABLE_RE.fullmatch(requirement):
+        raise ToolError(
+            f"'{requirement}' is not allowed. Pass a single requirement like 'name==1.2.3'."
         )
-    except FileNotFoundError as e:
-        raise ToolError(f"Test command not found: {ws.test_command[0]}") from e
-    except subprocess.TimeoutExpired as e:
-        raise ToolError("Tests timed out after 10 minutes.") from e
-    status = "PASSED" if proc.returncode == 0 else f"FAILED (exit code {proc.returncode})"
-    return _truncate(f"{status}\n\n--- stdout ---\n{proc.stdout}\n--- stderr ---\n{proc.stderr}")
+    return _format_result(
+        _run([str(ws.python), "-m", "pip", "install", requirement], ws.root, timeout=600)
+    )
+
+
+def run_tests(ws: Workspace) -> str:
+    return _format_result(_run(ws.command(ws.test_command), ws.root, timeout=600))
 
 
 TOOL_FUNCTIONS = {
     "list_files": list_files,
     "read_file": read_file,
+    "write_file": write_file,
+    "edit_file": edit_file,
     "read_dependencies": read_dependencies,
     "get_latest_version": get_latest_version,
+    "pip_install": pip_install,
     "run_tests": run_tests,
 }
 
-TOOL_SCHEMAS = [
+
+def _schema(properties: dict, required: list[str]) -> dict:
+    return {
+        "type": "object",
+        "properties": properties,
+        "required": required,
+        "additionalProperties": False,
+    }
+
+
+_PATH = {"type": "string", "description": "Path relative to the project root."}
+
+READ_TOOL_SCHEMAS = [
     {
         "name": "list_files",
         "description": "List project files recursively, skipping .git, virtualenvs and caches.",
-        "input_schema": {
-            "type": "object",
-            "properties": {
+        "input_schema": _schema(
+            {
                 "directory": {
                     "type": "string",
                     "description": "Directory relative to the project root. Defaults to '.'.",
                 }
             },
-            "required": [],
-            "additionalProperties": False,
-        },
+            [],
+        ),
     },
     {
         "name": "read_file",
         "description": "Read a text file from the project.",
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "path": {"type": "string", "description": "Path relative to the project root."}
-            },
-            "required": ["path"],
-            "additionalProperties": False,
-        },
+        "input_schema": _schema({"path": _PATH}, ["path"]),
     },
     {
         "name": "read_dependencies",
@@ -185,31 +249,58 @@ TOOL_SCHEMAS = [
             "Return the project's declared dependencies and version specifiers from "
             "requirements*.txt and pyproject.toml, grouped by source file."
         ),
-        "input_schema": {
-            "type": "object",
-            "properties": {},
-            "required": [],
-            "additionalProperties": False,
-        },
+        "input_schema": _schema({}, []),
     },
     {
         "name": "get_latest_version",
-        "description": "Look up the latest released version of a package on PyPI.",
-        "input_schema": {
-            "type": "object",
-            "properties": {"package": {"type": "string", "description": "PyPI package name."}},
-            "required": ["package"],
-            "additionalProperties": False,
-        },
+        "description": (
+            "Look up the latest released version of a package on PyPI, plus its project URLs "
+            "(often including a changelog link)."
+        ),
+        "input_schema": _schema(
+            {"package": {"type": "string", "description": "PyPI package name."}}, ["package"]
+        ),
     },
     {
         "name": "run_tests",
         "description": "Run the project's test suite and return pass/fail status plus output.",
-        "input_schema": {
-            "type": "object",
-            "properties": {},
-            "required": [],
-            "additionalProperties": False,
-        },
+        "input_schema": _schema({}, []),
+    },
+]
+
+WRITE_TOOL_SCHEMAS = [
+    {
+        "name": "edit_file",
+        "description": (
+            "Replace one exact occurrence of old_text with new_text in a file. old_text must "
+            "match the file exactly (including indentation) and appear only once."
+        ),
+        "input_schema": _schema(
+            {
+                "path": _PATH,
+                "old_text": {"type": "string", "description": "Exact text to replace."},
+                "new_text": {"type": "string", "description": "Replacement text."},
+            },
+            ["path", "old_text", "new_text"],
+        ),
+    },
+    {
+        "name": "write_file",
+        "description": "Create a file, or overwrite one completely. Prefer edit_file for changes.",
+        "input_schema": _schema(
+            {"path": _PATH, "content": {"type": "string", "description": "Full file content."}},
+            ["path", "content"],
+        ),
+    },
+    {
+        "name": "pip_install",
+        "description": (
+            "Install a single requirement into the project's isolated environment, "
+            "e.g. 'pydantic==2.9.2' or 'pydantic-settings'."
+        ),
+        "input_schema": _schema(
+            {"requirement": {"type": "string", "description": "One requirement specifier."}},
+            ["requirement"],
+        ),
     },
 ]

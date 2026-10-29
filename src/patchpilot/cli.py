@@ -1,4 +1,8 @@
-"""Command-line entry point: `patchpilot <project-path>`."""
+"""Command-line entry point.
+
+patchpilot analyze <project>            read-only upgrade report
+patchpilot upgrade <project> <package>  upgrade one package and fix what breaks
+"""
 
 from __future__ import annotations
 
@@ -10,41 +14,79 @@ from pathlib import Path
 
 from dotenv import find_dotenv, load_dotenv
 
-from patchpilot.agent import run_agent
+from patchpilot.analyze import analyze
 from patchpilot.tools import Workspace
+from patchpilot.upgrade import UpgradeError, upgrade
+
+
+def log_tool_call(name: str, tool_input: dict) -> None:
+    # File contents can be long; show just the path for writes.
+    shown = {k: v for k, v in tool_input.items() if k not in ("content", "old_text", "new_text")}
+    print(f"  → {name} {json.dumps(shown)}", file=sys.stderr)
+
+
+def log_status(message: str) -> None:
+    print(f"• {message}", file=sys.stderr)
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="patchpilot",
-        description="Analyze a Python project's dependencies and report what to upgrade.",
+        description="An AI agent that upgrades your dependencies and fixes what breaks.",
     )
-    parser.add_argument("project", type=Path, help="Path to the project to analyze.")
-    parser.add_argument(
-        "--test-command",
-        default="python -m pytest -q",
-        help="Command that runs the project's tests (default: %(default)s).",
-    )
-    args = parser.parse_args(argv)
+    sub = parser.add_subparsers(dest="command", required=True)
 
+    analyze_p = sub.add_parser("analyze", help="Report what could be upgraded (changes nothing).")
+    analyze_p.add_argument("project", type=Path, help="Path to the project.")
+
+    upgrade_p = sub.add_parser(
+        "upgrade", help="Upgrade one package, fix the code, and commit it to a new branch."
+    )
+    upgrade_p.add_argument("project", type=Path, help="Path to the project (inside a git repo).")
+    upgrade_p.add_argument("package", help="Name of the package to upgrade, e.g. pydantic.")
+
+    for p in (analyze_p, upgrade_p):
+        p.add_argument(
+            "--test-command",
+            default="python -m pytest -q",
+            help="Command that runs the project's tests (default: %(default)s).",
+        )
+
+    args = parser.parse_args(argv)
     project = args.project.expanduser().resolve()
     if not project.is_dir():
         parser.error(f"{project} is not a directory")
+    test_command = shlex.split(args.test_command)
 
     # Look for .env in the directory patchpilot is run from, not where it's installed.
     load_dotenv(find_dotenv(usecwd=True))
-    ws = Workspace(root=project, test_command=shlex.split(args.test_command))
-
-    def log_tool_call(name: str, tool_input: dict) -> None:
-        print(f"→ {name} {json.dumps(tool_input)}", file=sys.stderr)
 
     try:
-        report = run_agent(ws, on_tool_call=log_tool_call)
-    except RuntimeError as e:
+        if args.command == "analyze":
+            ws = Workspace(root=project, test_command=test_command)
+            print(analyze(ws, on_tool_call=log_tool_call))
+            return 0
+
+        result = upgrade(
+            project,
+            args.package,
+            test_command=test_command,
+            on_status=log_status,
+            on_tool_call=log_tool_call,
+        )
+    except (RuntimeError, UpgradeError) as e:
         print(f"patchpilot: {e}", file=sys.stderr)
         return 1
-    print(report)
-    return 0
+
+    print(result.report)
+    print(file=sys.stderr)
+    if not result.committed:
+        log_status("The agent didn't change any files, so no branch was created.")
+        return 1
+    verdict = "✅ tests pass" if result.tests_passed else "❌ tests still failing"
+    log_status(f"Committed to branch {result.branch} ({verdict})")
+    log_status(f"Review it with: git diff HEAD...{result.branch}")
+    return 0 if result.tests_passed else 1
 
 
 if __name__ == "__main__":
