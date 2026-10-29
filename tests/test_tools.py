@@ -1,5 +1,6 @@
 import json
 import sys
+from pathlib import Path
 
 import pytest
 
@@ -7,11 +8,14 @@ from patchpilot.agent import execute_tool
 from patchpilot.tools import (
     ToolError,
     Workspace,
+    edit_file,
     list_files,
     parse_requirements,
+    pip_install,
     read_dependencies,
     read_file,
     run_tests,
+    write_file,
 )
 
 
@@ -74,3 +78,42 @@ def test_execute_tool_turns_errors_into_tool_results(ws):
     assert is_error and "does not exist" in result
     result, is_error = execute_tool(ws, "read_file", {"wrong_arg": "x"})
     assert is_error and "Invalid arguments" in result
+
+
+def test_edit_file_replaces_exactly_one_match(ws):
+    (ws.root / "app.py").write_text("a = 1\nb = 1\n")
+    edit_file(ws, "app.py", "a = 1", "a = 2")
+    assert (ws.root / "app.py").read_text() == "a = 2\nb = 1\n"
+    assert ws.changed_files == {"app.py"}
+    with pytest.raises(ToolError, match="not found"):
+        edit_file(ws, "app.py", "zzz", "y")
+    with pytest.raises(ToolError, match="2 times"):
+        edit_file(ws, "app.py", "= ", "=")
+
+
+def test_write_file_refuses_git_dir_and_tracks_changes(ws):
+    write_file(ws, "pkg/new.py", "x = 1\n")
+    assert (ws.root / "pkg" / "new.py").read_text() == "x = 1\n"
+    assert "pkg/new.py" in ws.changed_files
+    with pytest.raises(ToolError, match="Refusing"):
+        write_file(ws, ".git/hooks/pre-commit", "evil")
+
+
+@pytest.mark.parametrize(
+    "requirement", ["--index-url=http://x", "-r other.txt", "https://x/y.whl", "a b", "pkg; rm"]
+)
+def test_pip_install_rejects_anything_but_one_requirement(ws, requirement):
+    ws.python = Path(sys.executable)
+    with pytest.raises(ToolError, match="not allowed"):
+        pip_install(ws, requirement)
+
+
+def test_pip_install_needs_an_isolated_environment(ws):
+    with pytest.raises(ToolError, match="upgrade mode"):
+        pip_install(ws, "requests")
+
+
+def test_workspace_points_python_at_its_own_interpreter(ws):
+    ws.python = Path("/tmp/venv/bin/python")
+    assert ws.command(["python", "-m", "pytest"]) == ["/tmp/venv/bin/python", "-m", "pytest"]
+    assert ws.command(["make", "test"]) == ["make", "test"]
