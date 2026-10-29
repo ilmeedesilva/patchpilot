@@ -18,6 +18,7 @@ from contextlib import ExitStack
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from patchpilot import github
 from patchpilot.agent import WEB_FETCH_TOOL, run_agent
 from patchpilot.sandbox import DEFAULT_IMAGE, DockerSandbox, LocalSandbox
 from patchpilot.tools import (
@@ -83,6 +84,7 @@ class UpgradeResult:
     report: str
     changed_files: list[str] = field(default_factory=list)
     committed: bool = False
+    pr_url: str | None = None
 
 
 def _git(*args: str, cwd: Path) -> str:
@@ -159,6 +161,7 @@ def upgrade(
     on_tool_call: Callable[[str, dict], None] | None = None,
     use_docker: bool = True,
     image: str = DEFAULT_IMAGE,
+    open_pr: bool = False,
 ) -> UpgradeResult:
     test_command = test_command or DEFAULT_TEST_COMMAND
     project = project.resolve()
@@ -176,6 +179,8 @@ def upgrade(
         )
     if use_docker:
         DockerSandbox.check_available()
+    # Check GitHub before spending anything on the agent, not after.
+    base = github.check_ready(repo_root, branch) if open_pr else None
 
     tmp = Path(tempfile.mkdtemp(prefix="patchpilot-"))
     worktree = tmp / "repo"
@@ -217,6 +222,7 @@ def upgrade(
 
         on_status("Re-running the tests to verify the agent's work")
         tests_passed = run_tests(ws).startswith("PASSED")
+        version = installed_version(ws, package)
         result = UpgradeResult(
             branch=branch,
             tests_passed=tests_passed,
@@ -227,10 +233,46 @@ def upgrade(
         if result.changed_files:
             paths = [str(project_rel / p) for p in result.changed_files]
             _git("add", "--", *paths, cwd=worktree)
-            title = f"Upgrade {package}" + ("" if tests_passed else " (tests still failing)")
+            title = f"Upgrade {package}" + (f" to {version}" if version else "")
+            title += "" if tests_passed else " (tests still failing)"
             _git("commit", "-q", "-m", title, "-m", report, cwd=worktree)
             result.committed = committed = True
+
+        if open_pr and result.committed:
+            on_status("Pushing the branch and opening a pull request")
+            where = f"in the Docker sandbox, {image}" if use_docker else "in a local virtualenv"
+            result.pr_url = github.open_pull_request(
+                repo_root,
+                branch,
+                base,
+                title,
+                pr_body(report, tests_passed, where),
+                draft=not tests_passed,
+            )
         return result
+
+
+def installed_version(ws: Workspace, package: str) -> str | None:
+    proc = ws.run(["python", "-m", "pip", "show", package], timeout=60)
+    for line in proc.stdout.splitlines():
+        if line.startswith("Version:"):
+            return line.split(":", 1)[1].strip()
+    return None
+
+
+def pr_body(report: str, tests_passed: bool, sandbox: str) -> str:
+    verdict = (
+        "✅ The test suite passes."
+        if tests_passed
+        else "❌ The test suite still fails. This PR is a draft; see *Needs your attention*."
+    )
+    return (
+        f"{report}\n\n---\n\n"
+        f"**Verified by patchpilot:** after the agent finished, patchpilot re-ran the tests "
+        f"itself ({sandbox}). {verdict}\n\n"
+        "<sub>Opened by [patchpilot](https://github.com/ilmeedesilva/patchpilot), an AI agent "
+        "that upgrades dependencies and fixes what breaks. Review it like any other PR.</sub>"
+    )
 
 
 def _remove_worktree(
