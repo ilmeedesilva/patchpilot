@@ -1,6 +1,7 @@
 # patchpilot
 
 [![CI](https://github.com/ilmeedesilva/patchpilot/actions/workflows/ci.yml/badge.svg)](https://github.com/ilmeedesilva/patchpilot/actions/workflows/ci.yml)
+[![PyPI](https://img.shields.io/pypi/v/patchpilot)](https://pypi.org/project/patchpilot/)
 ![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](https://github.com/ilmeedesilva/patchpilot/blob/main/LICENSE)
 
@@ -45,7 +46,7 @@ The PR description is written by the agent, and includes:
 You need Python 3.11+, [Docker Desktop](https://www.docker.com/products/docker-desktop/) running, and an [Anthropic API key](https://console.anthropic.com/settings/keys).
 
 ```bash
-pipx install git+https://github.com/ilmeedesilva/patchpilot.git   # soon: pipx install patchpilot
+pipx install patchpilot
 export ANTHROPIC_API_KEY=sk-ant-...      # or put it in a .env file where you run patchpilot
 
 cd your-project                          # a git repo with a test suite
@@ -138,7 +139,6 @@ The agent loop and your API key never enter the container. These properties are 
 
 ## Roadmap
 
-- [ ] Publish to PyPI (`pipx install patchpilot`)
 - [ ] GitHub Action: run weekly and open PRs automatically
 - [ ] Upgrade several packages in one run, ordered by risk
 - [ ] Turn off the sandbox's network access while tests run
