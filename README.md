@@ -16,6 +16,41 @@ Tools like Dependabot bump version numbers, but when an upgrade breaks your buil
 4. If tests fail, the agent reads the errors and the library's changelog, then edits the code to fix them
 5. Open a PR with the changes and a clear explanation
 
+## Status
+
+- [x] Agent loop with tool use
+- [x] Read declared dependencies (`requirements*.txt`, `pyproject.toml`)
+- [x] Look up latest versions on PyPI
+- [x] Run the test suite and report a baseline
+- [ ] Upgrade one dependency and edit code to fix breakages
+- [ ] Sandbox all commands in Docker
+- [ ] Open a pull request with the changes
+
+## Getting started
+
+```bash
+git clone git@github.com:ilmeedesilva/patchpilot.git
+cd patchpilot
+python3 -m venv .venv && source .venv/bin/activate
+pip install -e ".[dev]"
+cp .env.example .env   # then add your Anthropic API key
+```
+
+Analyze a project (right now patchpilot only reads files and runs tests; it doesn't change anything yet):
+
+```bash
+patchpilot path/to/your/project
+patchpilot path/to/your/project --test-command "python -m pytest -x"
+```
+
+The agent prints each tool call as it works, then a Markdown upgrade report.
+
+Run patchpilot's own tests:
+
+```bash
+pytest
+```
+
 ## Tech stack
 
 - Python

@@ -1,0 +1,35 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "patchpilot"
+version = "0.1.0"
+description = "An AI agent that upgrades your dependencies, fixes what breaks, and opens a PR"
+readme = "README.md"
+license = "MIT"
+authors = [{ name = "Ilmee De Silva" }]
+requires-python = ">=3.11"
+dependencies = [
+    "anthropic>=2.3.0",
+    "python-dotenv>=1.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "ruff>=0.6"]
+
+[project.scripts]
+patchpilot = "patchpilot.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/patchpilot"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP"]
