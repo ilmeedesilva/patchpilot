@@ -1,116 +1,161 @@
 # patchpilot
 
-An AI agent that upgrades your dependencies, fixes the code that breaks, and opens a pull request explaining what changed and why.
+[![CI](https://github.com/ilmeedesilva/patchpilot/actions/workflows/ci.yml/badge.svg)](https://github.com/ilmeedesilva/patchpilot/actions/workflows/ci.yml)
+![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue)
+[![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
-> 🚧 Work in progress.
+**An AI agent that upgrades a dependency, fixes the code that breaks, and opens a pull request explaining what changed and why.**
 
-## Why
+Dependabot and Renovate bump version numbers. When the new version breaks your build, the fix is still on you. patchpilot does that part: it upgrades the package inside a sandbox, runs your tests, reads the failures and the changelog, edits your code until the tests pass, and hands you a reviewable PR.
 
-Tools like Dependabot bump version numbers, but when an upgrade breaks your build, fixing it is still on you. patchpilot goes further: it upgrades a dependency, runs your tests, reads the failures and changelogs, patches your code, and only opens a PR once everything passes.
+<!-- TODO: demo GIF here: `patchpilot upgrade . pydantic --pr` → PR appears -->
 
-## How it works (planned)
+```console
+$ patchpilot upgrade . pydantic --pr
+• Creating an isolated copy of the repo on branch patchpilot/upgrade-pydantic
+• Starting a Docker sandbox (python:3.13-slim) and installing the project
+• Running the tests before upgrading
+• Agent is upgrading pydantic
+  → read_dependencies {}
+  → get_latest_version {"package": "pydantic"}
+  → pip_install {"requirement": "pydantic==2.14.1"}
+  → run_tests {}                      # fails: BaseSettings moved out of pydantic
+  → pip_install {"requirement": "pydantic-settings==2.16.2"}
+  → write_file {"path": "app/config.py"}
+  → write_file {"path": "app/models.py"}
+  → run_tests {}                      # passes
+• Re-running the tests to verify the agent's work
+• Pull request: https://github.com/<you>/<repo>/pull/1
+```
 
-1. Scan the project for outdated or vulnerable dependencies
-2. Upgrade one dependency at a time inside a sandboxed Docker container
-3. Run the test suite
-4. If tests fail, the agent reads the errors and the library's changelog, then edits the code to fix them
-5. Open a PR with the changes and a clear explanation
+The PR description is written by the agent, and includes:
 
-## Status
+> **Breaking changes**
+> - **`BaseSettings` moved to `pydantic-settings`**: importing it from `pydantic` now fails. Installed `pydantic-settings`, added it to `requirements.txt`, and now import from `pydantic_settings`.
+> - **`@root_validator` without `skip_on_failure=True` is an error in v2**: replaced with `@model_validator(mode="after")`.
+> - …
+>
+> **Needs your attention**
+> - In v1 the password check ran even when another field had failed; in v2 it only runs once all fields are valid, so a bad email plus mismatched passwords now reports only the email error.
 
-- [x] Agent loop with tool use
-- [x] Read declared dependencies (`requirements*.txt`, `pyproject.toml`)
-- [x] Look up latest versions on PyPI
-- [x] Run the test suite and report a baseline
-- [x] Upgrade one dependency and edit code to fix breakages, in an isolated git worktree
-- [x] Run the project's code in a locked-down Docker container
-- [x] Open a pull request with the agent's report (`--pr`)
+*(Trimmed output and report from a real run on [`examples/pydantic-demo`](examples/pydantic-demo).)*
 
-## Getting started
+## Quick start
+
+You need Python 3.11+, [Docker Desktop](https://www.docker.com/products/docker-desktop/) running, and an [Anthropic API key](https://console.anthropic.com/settings/keys).
 
 ```bash
-git clone git@github.com:ilmeedesilva/patchpilot.git
-cd patchpilot
+pipx install git+https://github.com/ilmeedesilva/patchpilot.git
+export ANTHROPIC_API_KEY=sk-ant-...      # or put it in a .env file where you run patchpilot
+
+cd your-project                          # a git repo with a test suite
+patchpilot analyze .                     # read-only report: what's outdated, what's risky
+patchpilot upgrade . pydantic            # upgrade + fix, committed to a new branch
+patchpilot upgrade . pydantic --pr       # ...and open a pull request
+```
+
+Each run uses Anthropic API credit. The amount depends on the size of the project and how much breaks.
+
+## Usage
+
+### `patchpilot analyze <project>`
+
+Reads your dependency files, checks PyPI for the latest versions and runs your tests once, then prints a Markdown report. It covers what's outdated, which upgrades are major-version jumps likely to need code changes, and a suggested order. It changes nothing.
+
+### `patchpilot upgrade <project> <package>`
+
+1. Checks that `<package>` really is a dependency of `<project>`. If it's declared in a subfolder instead, it tells you which one.
+2. Makes a separate checkout of your repo (a git worktree) on a new branch, `patchpilot/upgrade-<package>`. **Your working copy is never touched.**
+3. Starts a Docker sandbox, installs your project into it, and checks that the tests pass *before* changing anything.
+4. Lets the agent work: upgrade the package, run the tests, read the failures and changelog, edit the code, and repeat.
+5. **Re-runs the tests itself** instead of trusting the agent's word, then commits to the branch with the agent's report as the commit message.
+
+Review the result with `git diff HEAD...patchpilot/upgrade-<package>`, then merge it or delete it.
+
+| Option | |
+|---|---|
+| `--pr` | Push the branch and open a GitHub pull request. If the tests still fail, it's opened as a **draft**. Uses the [GitHub CLI](https://cli.github.com/), so patchpilot never handles a GitHub token. |
+| `--test-command "..."` | How to run your tests (default: `python -m pytest -q`). |
+| `--image python:3.11-slim` | Docker image to run in. Match it to your project's Python version (default: `python:3.13-slim`). |
+| `--no-docker` | Use a local virtualenv instead of Docker. Faster, but your project's code runs directly on your machine. |
+
+## How it works
+
+```mermaid
+flowchart LR
+    subgraph host["Your machine"]
+        CLI["patchpilot CLI"] --> Loop["Agent loop"]
+        Loop <-->|"tool calls ⇄ results"| Claude["Claude API"]
+        Loop --> Files["Read / edit files<br/>in a temporary worktree"]
+    end
+    subgraph sandbox["Docker sandbox: sees only the worktree"]
+        Pip["pip install &lt;one package&gt;"]
+        Tests["your test suite"]
+    end
+    Loop --> Pip
+    Loop --> Tests
+    Loop -->|"verify, commit"| Branch["patchpilot/upgrade-&lt;pkg&gt;"]
+    Branch -->|"--pr"| PR["GitHub pull request"]
+```
+
+At the centre is a hand-written [tool-use loop](src/patchpilot/agent.py). patchpilot sends Claude the task and a list of tools. Claude replies with the tool it wants to call, patchpilot runs it and sends back the result, and this repeats until Claude writes its final report. Claude decides *what* to do next; patchpilot's code is the only thing that *does* anything.
+
+| Tool | Runs where | What it does |
+|---|---|---|
+| `read_dependencies` | host | Parses `requirements*.txt` and `pyproject.toml` |
+| `get_latest_version` | host | Queries PyPI, including changelog URLs |
+| `list_files`, `read_file` | host | Read-only, confined to the project folder |
+| `edit_file`, `write_file` | host | Exact-match edits; refuses `.git/` and virtualenvs |
+| `pip_install` | **sandbox** | One requirement at a time; flags, URLs and file paths are rejected |
+| `run_tests` | **sandbox** | Your test command, with a timeout |
+| `web_fetch` | Anthropic | Reads changelogs and migration guides |
+
+### Safety
+
+Upgrading means running code that isn't yours: your tests, and whatever a package runs when it installs. So that code runs inside a Docker container that:
+
+- mounts **only the temporary worktree**, not your home folder, SSH keys or other projects
+- runs as your user, not root, with all Linux capabilities dropped and `no-new-privileges`
+- is capped at 2 CPUs, 2 GB of memory and 512 processes
+- is deleted when the run ends, even if the run fails
+
+The agent loop and your API key never enter the container. These properties are checked by [integration tests](tests/test_sandbox.py), not just described here.
+
+### Design decisions
+
+- **Verify, don't trust.** The agent says when it's done, but patchpilot re-runs the tests itself before committing. The ✅ in the output is patchpilot's verdict, not the model's.
+- **Refuse to run when "tests pass" would mean nothing.** patchpilot stops if the tests already fail before the upgrade, or if the package isn't a dependency of the folder you pointed it at. Otherwise a green result could be meaningless.
+- **Fail before spending, not after.** Docker, GitHub login, remotes and branch names are all checked before the first API call.
+- **Leave nothing behind.** The worktree, container and virtualenv are cleaned up on success, failure or Ctrl-C. A branch only survives if it has a commit worth reviewing.
+- **A small, explicit tool surface** instead of a general shell. It's easier to reason about what the agent can do, and easier to sandbox.
+
+## Limitations
+
+- Python projects only, with `requirements*.txt` or a PEP 621 `pyproject.toml` (no Poetry or uv lockfiles yet).
+- One package per run.
+- The fix is only as good as your tests. If they don't cover what changed, patchpilot can't catch it, though the agent flags behaviour changes it notices under **Needs your attention**.
+- The sandbox needs network access to install packages, so code inside it can reach the internet.
+
+## Roadmap
+
+- [ ] Publish to PyPI (`pipx install patchpilot`)
+- [ ] GitHub Action: run weekly and open PRs automatically
+- [ ] Upgrade several packages in one run, ordered by risk
+- [ ] Turn off the sandbox's network access while tests run
+- [ ] uv and Poetry lockfile support
+
+## Development
+
+```bash
+git clone git@github.com:ilmeedesilva/patchpilot.git && cd patchpilot
 python3 -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev]"
-cp .env.example .env   # then add your Anthropic API key
+pytest          # Docker tests are skipped if Docker isn't running
+ruff check . && ruff format --check .
 ```
 
-### See what could be upgraded
-
-```bash
-patchpilot analyze path/to/your/project
-```
-
-This is read-only: it prints a Markdown report of outdated dependencies, likely breaking upgrades and the current test result.
-
-### Upgrade a package and fix what breaks
-
-```bash
-cd path/to/your/project          # must be inside a git repo
-patchpilot upgrade . pydantic
-git diff HEAD...patchpilot/upgrade-pydantic   # review what it did
-```
-
-What happens:
-
-1. patchpilot makes a separate checkout of your repo (a git worktree) on a new branch, `patchpilot/upgrade-<package>`. **Your own files are never touched.**
-2. It starts a Docker sandbox (see below), installs your project into it and checks that the tests pass.
-3. The agent upgrades the package, runs the tests, reads the failures and the package's changelog, and edits the code until the tests pass.
-4. patchpilot re-runs the tests itself, rather than trusting the agent's word, then commits the changes to the branch. The commit message is the agent's report: what broke, how it was fixed, and what still needs your attention.
-
-Or let patchpilot open the pull request for you:
-
-```bash
-patchpilot upgrade . pydantic --pr
-```
-
-This pushes the branch and opens a PR whose description is the agent's report, plus a note confirming that patchpilot re-ran the tests itself. If the tests still fail, the PR is opened as a **draft** so it can't be merged by accident. `--pr` uses the [GitHub CLI](https://cli.github.com/) (`gh auth login` once), so patchpilot never handles a GitHub token itself. It checks that GitHub is set up *before* the agent starts, so a missing login doesn't waste a run.
-
-If you like the result, merge the branch. If you don't, delete it: `git branch -D patchpilot/upgrade-pydantic`.
-
-Options:
-
-- `--test-command "..."` if your tests don't run with `python -m pytest -q`
-- `--image python:3.11-slim` to match your project's Python version (default `python:3.13-slim`)
-- `--no-docker` to use a local virtualenv instead of Docker: faster, but less isolated
-
-### The sandbox
-
-Upgrading means installing packages from PyPI and running code: your tests, and anything those packages run on install. patchpilot does all of that inside a Docker container that:
-
-- can see **only the temporary copy of your repo**, not your home folder, SSH keys or other projects
-- runs as your normal user, not root, with all extra Linux privileges removed
-- is limited to 2 CPUs, 2 GB of memory and 512 processes, so runaway tests can't freeze your machine
-- is deleted when the run ends
-
-The agent itself, and your API key, stay outside the container. Inside it, the agent can only run the commands patchpilot exposes: `pip install <one package>` and your test command.
-
-### Try it on the demo project
-
-[`examples/pydantic-demo`](examples/pydantic-demo) is a small app written for pydantic v1 that breaks on v2. Copy it somewhere and let patchpilot fix it:
-
-```bash
-cp -R examples/pydantic-demo /tmp/demo && cd /tmp/demo
-git init -q && git add . && git commit -qm "demo"
-patchpilot upgrade . pydantic
-```
-
-You need Docker Desktop running (or pass `--no-docker`).
-
-Run patchpilot's own tests:
-
-```bash
-pytest
-```
-
-## Tech stack
-
-- Python
-- Claude API (tool use)
-- Docker (sandboxed execution)
-- GitHub API
+The test suite doesn't call the Anthropic API: the agent is replaced with a fake that makes known edits, and GitHub with a local bare repo plus a stand-in `gh`.
 
 ## License
 
-MIT
+[MIT](LICENSE)
