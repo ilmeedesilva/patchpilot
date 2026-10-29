@@ -1,6 +1,6 @@
 import json
 import sys
-from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -103,7 +103,7 @@ def test_write_file_refuses_git_dir_and_tracks_changes(ws):
     "requirement", ["--index-url=http://x", "-r other.txt", "https://x/y.whl", "a b", "pkg; rm"]
 )
 def test_pip_install_rejects_anything_but_one_requirement(ws, requirement):
-    ws.python = Path(sys.executable)
+    ws.sandbox = SimpleNamespace(python=sys.executable)
     with pytest.raises(ToolError, match="not allowed"):
         pip_install(ws, requirement)
 
@@ -114,6 +114,6 @@ def test_pip_install_needs_an_isolated_environment(ws):
 
 
 def test_workspace_points_python_at_its_own_interpreter(ws):
-    ws.python = Path("/tmp/venv/bin/python")
+    ws.sandbox = SimpleNamespace(python="/tmp/venv/bin/python")
     assert ws.command(["python", "-m", "pytest"]) == ["/tmp/venv/bin/python", "-m", "pytest"]
     assert ws.command(["make", "test"]) == ["make", "test"]

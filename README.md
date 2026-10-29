@@ -23,7 +23,7 @@ Tools like Dependabot bump version numbers, but when an upgrade breaks your buil
 - [x] Look up latest versions on PyPI
 - [x] Run the test suite and report a baseline
 - [x] Upgrade one dependency and edit code to fix breakages, in an isolated git worktree
-- [ ] Sandbox all commands in Docker
+- [x] Run the project's code in a locked-down Docker container
 - [ ] Open a pull request with the changes
 
 ## Getting started
@@ -55,13 +55,28 @@ git diff HEAD...patchpilot/upgrade-pydantic   # review what it did
 What happens:
 
 1. patchpilot makes a separate checkout of your repo (a git worktree) on a new branch, `patchpilot/upgrade-<package>`. **Your own files are never touched.**
-2. It installs your project into a fresh virtualenv and checks that the tests pass.
+2. It starts a Docker sandbox (see below), installs your project into it and checks that the tests pass.
 3. The agent upgrades the package, runs the tests, reads the failures and the package's changelog, and edits the code until the tests pass.
 4. patchpilot re-runs the tests itself, rather than trusting the agent's word, then commits the changes to the branch. The commit message is the agent's report: what broke, how it was fixed, and what still needs your attention.
 
 If you like the result, merge the branch. If you don't, delete it: `git branch -D patchpilot/upgrade-pydantic`.
 
-Use `--test-command` if your tests don't run with `python -m pytest -q`.
+Options:
+
+- `--test-command "..."` if your tests don't run with `python -m pytest -q`
+- `--image python:3.11-slim` to match your project's Python version (default `python:3.13-slim`)
+- `--no-docker` to use a local virtualenv instead of Docker: faster, but less isolated
+
+### The sandbox
+
+Upgrading means installing packages from PyPI and running code: your tests, and anything those packages run on install. patchpilot does all of that inside a Docker container that:
+
+- can see **only the temporary copy of your repo**, not your home folder, SSH keys or other projects
+- runs as your normal user, not root, with all extra Linux privileges removed
+- is limited to 2 CPUs, 2 GB of memory and 512 processes, so runaway tests can't freeze your machine
+- is deleted when the run ends
+
+The agent itself, and your API key, stay outside the container. Inside it, the agent can only run the commands patchpilot exposes: `pip install <one package>` and your test command.
 
 ### Try it on the demo project
 
@@ -73,7 +88,7 @@ git init -q && git add . && git commit -qm "demo"
 patchpilot upgrade . pydantic
 ```
 
-> ⚠️ Until the Docker sandbox lands, the project's tests and `pip install` run directly on your machine (inside a throwaway virtualenv). Only run patchpilot on code you trust.
+You need Docker Desktop running (or pass `--no-docker`).
 
 Run patchpilot's own tests:
 

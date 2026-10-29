@@ -43,7 +43,7 @@ def fake_agent(edit=True):
 
 def test_upgrade_commits_to_new_branch_without_touching_checkout(repo, monkeypatch):
     monkeypatch.setattr(upgrade_mod, "run_agent", fake_agent())
-    result = upgrade(repo, "demo", test_command=PASSING_TESTS)
+    result = upgrade(repo, "demo", test_command=PASSING_TESTS, use_docker=False)
 
     assert result.committed and result.tests_passed
     assert result.branch == "patchpilot/upgrade-demo"
@@ -57,7 +57,7 @@ def test_upgrade_commits_to_new_branch_without_touching_checkout(repo, monkeypat
 
 def test_upgrade_without_changes_leaves_no_branch(repo, monkeypatch):
     monkeypatch.setattr(upgrade_mod, "run_agent", fake_agent(edit=False))
-    result = upgrade(repo, "demo", test_command=PASSING_TESTS)
+    result = upgrade(repo, "demo", test_command=PASSING_TESTS, use_docker=False)
     assert not result.committed
     assert "patchpilot/upgrade-demo" not in git("branch", cwd=repo).stdout
 
@@ -65,19 +65,21 @@ def test_upgrade_without_changes_leaves_no_branch(repo, monkeypatch):
 def test_upgrade_refuses_when_baseline_tests_fail(repo, monkeypatch):
     monkeypatch.setattr(upgrade_mod, "run_agent", fake_agent())
     with pytest.raises(UpgradeError, match="fail before any upgrade"):
-        upgrade(repo, "demo", test_command=["python", "-c", "raise SystemExit(1)"])
+        upgrade(
+            repo, "demo", test_command=["python", "-c", "raise SystemExit(1)"], use_docker=False
+        )
     assert "patchpilot/upgrade-demo" not in git("branch", cwd=repo).stdout
 
 
 def test_upgrade_refuses_existing_branch(repo):
     git("branch", "patchpilot/upgrade-demo", cwd=repo)
     with pytest.raises(UpgradeError, match="already exists"):
-        upgrade(repo, "demo", test_command=PASSING_TESTS)
+        upgrade(repo, "demo", test_command=PASSING_TESTS, use_docker=False)
 
 
 def test_upgrade_requires_git_repo(tmp_path):
     with pytest.raises(UpgradeError, match="rev-parse"):
-        upgrade(tmp_path, "demo", test_command=PASSING_TESTS)
+        upgrade(tmp_path, "demo", test_command=PASSING_TESTS, use_docker=False)
 
 
 def test_upgrade_points_to_the_folder_that_declares_the_package(repo, monkeypatch):
@@ -86,7 +88,7 @@ def test_upgrade_points_to_the_folder_that_declares_the_package(repo, monkeypatc
     (sub / "requirements.txt").write_text("Flask_Login>=0.6\n")
     monkeypatch.chdir(repo)
     with pytest.raises(UpgradeError) as excinfo:
-        upgrade(repo, "flask-login", test_command=PASSING_TESTS)
+        upgrade(repo, "flask-login", test_command=PASSING_TESTS, use_docker=False)
     message = str(excinfo.value)
     assert "isn't a dependency" in message
     assert "Try: patchpilot upgrade examples/web flask-login" in message
@@ -94,5 +96,21 @@ def test_upgrade_points_to_the_folder_that_declares_the_package(repo, monkeypatc
 
 def test_upgrade_refuses_package_declared_nowhere(repo):
     with pytest.raises(UpgradeError, match="isn't a dependency") as excinfo:
-        upgrade(repo, "numpy", test_command=PASSING_TESTS)
+        upgrade(repo, "numpy", test_command=PASSING_TESTS, use_docker=False)
     assert "Try:" not in str(excinfo.value)
+
+
+@pytest.mark.skipif(
+    subprocess.run(["docker", "info"], capture_output=True).returncode != 0,
+    reason="Docker is not running",
+)
+def test_upgrade_in_docker_sandbox(repo, monkeypatch):
+    monkeypatch.setattr(upgrade_mod, "run_agent", fake_agent())
+    result = upgrade(repo, "demo", test_command=PASSING_TESTS)
+    assert result.committed and result.tests_passed
+    assert (
+        "patchpilot-"
+        not in subprocess.run(
+            ["docker", "ps", "-a", "--format", "{{.Names}}"], capture_output=True, text=True
+        ).stdout
+    )
