@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/ilmeedesilva/patchpilot/actions/workflows/ci.yml/badge.svg)](https://github.com/ilmeedesilva/patchpilot/actions/workflows/ci.yml)
 ![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue)
-[![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
+[![License: MIT](https://img.shields.io/badge/license-MIT-green)](https://github.com/ilmeedesilva/patchpilot/blob/main/LICENSE)
 
 **An AI agent that upgrades a dependency, fixes the code that breaks, and opens a pull request explaining what changed and why.**
 
@@ -38,14 +38,14 @@ The PR description is written by the agent, and includes:
 > **Needs your attention**
 > - In v1 the password check ran even when another field had failed; in v2 it only runs once all fields are valid, so a bad email plus mismatched passwords now reports only the email error.
 
-*(Trimmed output and report from a real run on [`examples/pydantic-demo`](examples/pydantic-demo).)*
+*(Trimmed output and report from a real run on [`examples/pydantic-demo`](https://github.com/ilmeedesilva/patchpilot/tree/main/examples/pydantic-demo).)*
 
 ## Quick start
 
 You need Python 3.11+, [Docker Desktop](https://www.docker.com/products/docker-desktop/) running, and an [Anthropic API key](https://console.anthropic.com/settings/keys).
 
 ```bash
-pipx install git+https://github.com/ilmeedesilva/patchpilot.git
+pipx install git+https://github.com/ilmeedesilva/patchpilot.git   # soon: pipx install patchpilot
 export ANTHROPIC_API_KEY=sk-ant-...      # or put it in a .env file where you run patchpilot
 
 cd your-project                          # a git repo with a test suite
@@ -98,7 +98,7 @@ flowchart LR
     Branch -->|"--pr"| PR["GitHub pull request"]
 ```
 
-At the centre is a hand-written [tool-use loop](src/patchpilot/agent.py). patchpilot sends Claude the task and a list of tools. Claude replies with the tool it wants to call, patchpilot runs it and sends back the result, and this repeats until Claude writes its final report. Claude decides *what* to do next; patchpilot's code is the only thing that *does* anything.
+At the centre is a hand-written [tool-use loop](https://github.com/ilmeedesilva/patchpilot/blob/main/src/patchpilot/agent.py). patchpilot sends Claude the task and a list of tools. Claude replies with the tool it wants to call, patchpilot runs it and sends back the result, and this repeats until Claude writes its final report. Claude decides *what* to do next; patchpilot's code is the only thing that *does* anything.
 
 | Tool | Runs where | What it does |
 |---|---|---|
@@ -119,7 +119,7 @@ Upgrading means running code that isn't yours: your tests, and whatever a packag
 - is capped at 2 CPUs, 2 GB of memory and 512 processes
 - is deleted when the run ends, even if the run fails
 
-The agent loop and your API key never enter the container. These properties are checked by [integration tests](tests/test_sandbox.py), not just described here.
+The agent loop and your API key never enter the container. These properties are checked by [integration tests](https://github.com/ilmeedesilva/patchpilot/blob/main/tests/test_sandbox.py), not just described here.
 
 ### Design decisions
 
@@ -158,4 +158,4 @@ The test suite doesn't call the Anthropic API: the agent is replaced with a fake
 
 ## License
 
-[MIT](LICENSE)
+[MIT](https://github.com/ilmeedesilva/patchpilot/blob/main/LICENSE)
