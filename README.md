@@ -13,6 +13,8 @@ Dependabot and Renovate bump version numbers. When the new version breaks your b
 
 👉 **[See the pull request it opened](https://github.com/ilmeedesilva/patchpilot-demo/pull/1)**: the description, the diff, and the verification note were all written by patchpilot.
 
+✍️ **[Read the write-up](https://dev.to/ilmeedesilva/i-built-an-ai-agent-that-fixes-the-code-a-dependency-upgrade-breaks-2664)**: how it works and what I learned building it.
+
 ```console
 $ patchpilot upgrade . pydantic --pr
 • Creating an isolated copy of the repo on branch patchpilot/upgrade-pydantic
