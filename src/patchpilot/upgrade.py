@@ -1,8 +1,9 @@
 """`patchpilot upgrade`: upgrade one package, fix what breaks, commit the result to a branch.
 
 The user's own checkout is never modified. All work happens in a temporary git worktree
-(a second checkout of the same repo) with its own virtualenv. Only the finished commit,
-on a new `patchpilot/upgrade-<package>` branch, is left behind.
+(a second checkout of the same repo), and the project's code only ever runs inside a
+sandbox (see patchpilot.sandbox). Only the finished commit, on a new
+`patchpilot/upgrade-<package>` branch, is left behind.
 """
 
 from __future__ import annotations
@@ -10,14 +11,15 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
-import sys
 import tempfile
 import tomllib
 from collections.abc import Callable
+from contextlib import ExitStack
 from dataclasses import dataclass, field
 from pathlib import Path
 
 from patchpilot.agent import WEB_FETCH_TOOL, run_agent
+from patchpilot.sandbox import DEFAULT_IMAGE, DockerSandbox, LocalSandbox
 from patchpilot.tools import (
     IGNORED_DIRS,
     READ_TOOL_SCHEMAS,
@@ -90,29 +92,27 @@ def _git(*args: str, cwd: Path) -> str:
     return proc.stdout.strip()
 
 
-def _pip(python: Path, args: list[str], cwd: Path) -> None:
-    proc = subprocess.run(
-        [str(python), "-m", "pip", "install", "-q", *args], cwd=cwd, capture_output=True, text=True
-    )
+def _pip(ws: Workspace, args: list[str]) -> None:
+    proc = ws.run(["python", "-m", "pip", "install", "-q", *args], timeout=900)
     if proc.returncode != 0:
         raise UpgradeError(f"Installing the project failed:\n{proc.stderr.strip()[-3000:]}")
 
 
-def install_project(python: Path, project: Path, test_command: list[str]) -> None:
-    """Install the project and its declared dependencies into the given interpreter."""
+def install_project(ws: Workspace) -> None:
+    """Install the project and its declared dependencies into the workspace's sandbox."""
+    project = ws.root
     for req_file in sorted(project.glob("requirements*.txt")):
-        _pip(python, ["-r", req_file.name], project)
+        _pip(ws, ["-r", req_file.name])
 
     pyproject = project / "pyproject.toml"
     if pyproject.is_file() and "project" in tomllib.loads(pyproject.read_text()):
         extras = tomllib.loads(pyproject.read_text())["project"].get("optional-dependencies", {})
         target = f".[{','.join(extras)}]" if extras else "."
-        _pip(python, ["-e", target], project)
+        _pip(ws, ["-e", target])
 
-    if test_command == DEFAULT_TEST_COMMAND:
-        check = subprocess.run([str(python), "-m", "pytest", "--version"], capture_output=True)
-        if check.returncode != 0:
-            _pip(python, ["pytest"], project)
+    if ws.test_command == DEFAULT_TEST_COMMAND:
+        if ws.run(["python", "-m", "pytest", "--version"], timeout=60).returncode != 0:
+            _pip(ws, ["pytest"])
 
 
 def _declares(directory: Path, package: str) -> list[str]:
@@ -157,6 +157,8 @@ def upgrade(
     test_command: list[str] | None = None,
     on_status: Callable[[str], None] = lambda _: None,
     on_tool_call: Callable[[str, dict], None] | None = None,
+    use_docker: bool = True,
+    image: str = DEFAULT_IMAGE,
 ) -> UpgradeResult:
     test_command = test_command or DEFAULT_TEST_COMMAND
     project = project.resolve()
@@ -172,21 +174,29 @@ def upgrade(
         raise UpgradeError(
             f"Branch '{branch}' already exists. Delete it first: git branch -D {branch}"
         )
+    if use_docker:
+        DockerSandbox.check_available()
 
     tmp = Path(tempfile.mkdtemp(prefix="patchpilot-"))
     worktree = tmp / "repo"
     committed = False
-    try:
+    with ExitStack() as cleanup:
+        cleanup.callback(_remove_worktree, repo_root, worktree, branch, lambda: committed, tmp)
+
         on_status(f"Creating an isolated copy of the repo on branch {branch}")
         _git("worktree", "add", "-q", "-b", branch, str(worktree), "HEAD", cwd=repo_root)
         work_project = worktree / project_rel
 
-        on_status("Creating a fresh virtualenv and installing the project")
-        subprocess.run([sys.executable, "-m", "venv", str(tmp / "venv")], check=True)
-        python = tmp / "venv" / "bin" / "python"
-        install_project(python, work_project, test_command)
+        if use_docker:
+            on_status(f"Starting a Docker sandbox ({image}) and installing the project")
+            sandbox = DockerSandbox(worktree, project_rel, image)
+        else:
+            on_status("Creating a local virtualenv and installing the project (no Docker)")
+            sandbox = LocalSandbox(work_project, tmp / "venv")
+        cleanup.enter_context(sandbox)
 
-        ws = Workspace(root=work_project, test_command=test_command, python=python)
+        ws = Workspace(root=work_project, test_command=test_command, sandbox=sandbox)
+        install_project(ws)
         on_status("Running the tests before upgrading")
         baseline = run_tests(ws)
         if not baseline.startswith("PASSED"):
@@ -221,13 +231,15 @@ def upgrade(
             _git("commit", "-q", "-m", title, "-m", report, cwd=worktree)
             result.committed = committed = True
         return result
-    finally:
-        subprocess.run(
-            ["git", "worktree", "remove", "--force", str(worktree)],
-            cwd=repo_root,
-            capture_output=True,
-        )
-        # No commit means nothing worth reviewing, so don't leave an empty branch behind.
-        if not committed:
-            subprocess.run(["git", "branch", "-D", branch], cwd=repo_root, capture_output=True)
-        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def _remove_worktree(
+    repo_root: Path, worktree: Path, branch: str, committed: Callable[[], bool], tmp: Path
+) -> None:
+    subprocess.run(
+        ["git", "worktree", "remove", "--force", str(worktree)], cwd=repo_root, capture_output=True
+    )
+    # No commit means nothing worth reviewing, so don't leave an empty branch behind.
+    if not committed():
+        subprocess.run(["git", "branch", "-D", branch], cwd=repo_root, capture_output=True)
+    shutil.rmtree(tmp, ignore_errors=True)

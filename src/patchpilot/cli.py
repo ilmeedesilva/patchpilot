@@ -15,6 +15,7 @@ from pathlib import Path
 from dotenv import find_dotenv, load_dotenv
 
 from patchpilot.analyze import analyze
+from patchpilot.sandbox import DEFAULT_IMAGE, SandboxError
 from patchpilot.tools import Workspace
 from patchpilot.upgrade import UpgradeError, upgrade
 
@@ -44,6 +45,18 @@ def main(argv: list[str] | None = None) -> int:
     )
     upgrade_p.add_argument("project", type=Path, help="Path to the project (inside a git repo).")
     upgrade_p.add_argument("package", help="Name of the package to upgrade, e.g. pydantic.")
+    upgrade_p.add_argument(
+        "--image",
+        default=DEFAULT_IMAGE,
+        help="Docker image to run the project in; pick one matching your Python version "
+        "(default: %(default)s).",
+    )
+    upgrade_p.add_argument(
+        "--no-docker",
+        action="store_true",
+        help="Run in a local virtualenv instead of Docker. Faster, but the project's code "
+        "runs directly on your machine.",
+    )
 
     for p in (analyze_p, upgrade_p):
         p.add_argument(
@@ -73,8 +86,10 @@ def main(argv: list[str] | None = None) -> int:
             test_command=test_command,
             on_status=log_status,
             on_tool_call=log_tool_call,
+            use_docker=not args.no_docker,
+            image=args.image,
         )
-    except (RuntimeError, UpgradeError) as e:
+    except (RuntimeError, UpgradeError, SandboxError) as e:
         print(f"patchpilot: {e}", file=sys.stderr)
         return 1
 

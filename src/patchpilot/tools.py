@@ -14,6 +14,7 @@ import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Protocol
 
 MAX_OUTPUT_CHARS = 20_000
 IGNORED_DIRS = {".git", ".venv", "venv", "__pycache__", "node_modules", ".pytest_cache"}
@@ -30,12 +31,21 @@ class ToolError(Exception):
     """A tool failed in a way the model should hear about and can recover from."""
 
 
+class Sandbox(Protocol):
+    """Somewhere to run the project's commands (see patchpilot.sandbox)."""
+
+    python: str
+
+    def run(self, cmd: list[str], timeout: int) -> subprocess.CompletedProcess[str]: ...
+
+
 @dataclass
 class Workspace:
     root: Path
     test_command: list[str]
-    # Python interpreter of the isolated environment; None means use whatever is on PATH.
-    python: Path | None = None
+    # Where commands run in upgrade mode. None runs them directly in `root`, using whatever
+    # Python is on PATH (analyze mode, which never installs anything).
+    sandbox: Sandbox | None = None
     changed_files: set[str] = field(default_factory=set)
 
     def resolve(self, relative_path: str) -> Path:
@@ -45,10 +55,27 @@ class Workspace:
         return path
 
     def command(self, cmd: list[str]) -> list[str]:
-        """Point a leading `python` at the workspace's own interpreter."""
-        if self.python and cmd and cmd[0] in ("python", "python3"):
-            return [str(self.python), *cmd[1:]]
+        """Point a leading `python` at the sandbox's own interpreter."""
+        if self.sandbox and cmd and cmd[0] in ("python", "python3"):
+            return [self.sandbox.python, *cmd[1:]]
         return cmd
+
+    def run(self, cmd: list[str], timeout: int) -> subprocess.CompletedProcess[str]:
+        cmd = self.command(cmd)
+        try:
+            if self.sandbox:
+                proc = self.sandbox.run(cmd, timeout)
+            else:
+                proc = subprocess.run(
+                    cmd, cwd=self.root, capture_output=True, text=True, timeout=timeout
+                )
+        except FileNotFoundError as e:
+            raise ToolError(f"Command not found: {cmd[0]}") from e
+        except subprocess.TimeoutExpired as e:
+            raise ToolError(f"Command timed out after {timeout} seconds.") from e
+        if self.sandbox and proc.returncode == 124:  # exit code of coreutils `timeout`
+            raise ToolError(f"Command timed out after {timeout} seconds.")
+        return proc
 
 
 def _truncate(text: str) -> str:
@@ -57,15 +84,6 @@ def _truncate(text: str) -> str:
     # Test failures usually matter most at the end of the output, so keep the tail.
     dropped = len(text) - MAX_OUTPUT_CHARS
     return f"[... {dropped} characters truncated ...]\n" + text[-MAX_OUTPUT_CHARS:]
-
-
-def _run(cmd: list[str], cwd: Path, timeout: int) -> subprocess.CompletedProcess[str]:
-    try:
-        return subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, timeout=timeout)
-    except FileNotFoundError as e:
-        raise ToolError(f"Command not found: {cmd[0]}") from e
-    except subprocess.TimeoutExpired as e:
-        raise ToolError(f"Command timed out after {timeout} seconds.") from e
 
 
 def _format_result(proc: subprocess.CompletedProcess[str]) -> str:
@@ -194,20 +212,18 @@ def get_latest_version(ws: Workspace, package: str) -> str:
 
 
 def pip_install(ws: Workspace, requirement: str) -> str:
-    """Install one requirement (e.g. 'pydantic==2.9.2') into the workspace's environment."""
-    if ws.python is None:
+    """Install one requirement (e.g. 'pydantic==2.9.2') into the sandbox's environment."""
+    if ws.sandbox is None:
         raise ToolError("Installing packages is only available in upgrade mode.")
     if not INSTALLABLE_RE.fullmatch(requirement):
         raise ToolError(
             f"'{requirement}' is not allowed. Pass a single requirement like 'name==1.2.3'."
         )
-    return _format_result(
-        _run([str(ws.python), "-m", "pip", "install", requirement], ws.root, timeout=600)
-    )
+    return _format_result(ws.run(["python", "-m", "pip", "install", requirement], timeout=600))
 
 
 def run_tests(ws: Workspace) -> str:
-    return _format_result(_run(ws.command(ws.test_command), ws.root, timeout=600))
+    return _format_result(ws.run(ws.test_command, timeout=600))
 
 
 TOOL_FUNCTIONS = {
