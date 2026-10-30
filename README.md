@@ -93,6 +93,10 @@ Review the result with `git diff HEAD...patchpilot/upgrade-<package>`, then merg
 
 ## Use it in GitHub Actions
 
+![The patchpilot Action picking marshmallow, upgrading it, and opening a pull request](https://raw.githubusercontent.com/ilmeedesilva/patchpilot/main/docs/action-run.gif)
+
+*The log from the Action's first run on [patchpilot-demo](https://github.com/ilmeedesilva/patchpilot-demo/pull/3), replayed.*
+
 Add this file to your repo as `.github/workflows/patchpilot.yml`. Every Monday, patchpilot picks the next outdated package, upgrades it, fixes your code, and opens a pull request:
 
 ```yaml
