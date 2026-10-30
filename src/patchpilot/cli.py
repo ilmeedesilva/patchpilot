@@ -2,6 +2,7 @@
 
 patchpilot analyze <project>            read-only upgrade report
 patchpilot upgrade <project> <package>  upgrade one package and fix what breaks
+patchpilot upgrade <project> --auto     pick the next outdated package, then upgrade it
 """
 
 from __future__ import annotations
@@ -18,9 +19,10 @@ from dotenv import find_dotenv, load_dotenv
 from patchpilot.agent import MODEL
 from patchpilot.analyze import analyze
 from patchpilot.github import GitHubError
+from patchpilot.pick import PREFERENCES, pick_package
 from patchpilot.sandbox import DEFAULT_IMAGE, SandboxError
 from patchpilot.tools import Workspace
-from patchpilot.upgrade import UpgradeError, upgrade
+from patchpilot.upgrade import UpgradeError, git_root, upgrade
 
 
 def log_tool_call(name: str, tool_input: dict) -> None:
@@ -75,7 +77,22 @@ def main(argv: list[str] | None = None) -> int:
         "upgrade", help="Upgrade one package, fix the code, and commit it to a new branch."
     )
     upgrade_p.add_argument("project", type=Path, help="Path to the project (inside a git repo).")
-    upgrade_p.add_argument("package", help="Name of the package to upgrade, e.g. pydantic.")
+    upgrade_p.add_argument(
+        "package", nargs="?", help="Name of the package to upgrade, e.g. pydantic."
+    )
+    upgrade_p.add_argument(
+        "--auto",
+        action="store_true",
+        help="Pick the package yourself: one whose newest release is outside the declared "
+        "range and that doesn't already have a patchpilot branch.",
+    )
+    upgrade_p.add_argument(
+        "--prefer",
+        choices=PREFERENCES,
+        default="smallest",
+        help="With --auto, start with the smallest or the largest version jump "
+        "(default: %(default)s).",
+    )
     upgrade_p.add_argument(
         "--image",
         default=DEFAULT_IMAGE,
@@ -106,6 +123,8 @@ def main(argv: list[str] | None = None) -> int:
     if not project.is_dir():
         parser.error(f"{project} is not a directory")
     test_command = shlex.split(args.test_command)
+    if args.command == "upgrade" and bool(args.package) == args.auto:
+        parser.error("name a package to upgrade, or pass --auto (not both)")
 
     # Look for .env in the directory patchpilot is run from, not where it's installed.
     load_dotenv(find_dotenv(usecwd=True))
@@ -116,9 +135,21 @@ def main(argv: list[str] | None = None) -> int:
             print(analyze(ws, on_tool_call=log_tool_call))
             return 0
 
+        package = args.package
+        if args.auto:
+            log_status("Looking for an outdated package")
+            picked = pick_package(
+                project, git_root(project), prefer=args.prefer, on_status=log_status
+            )
+            if picked is None:
+                log_status("Nothing to upgrade: every pinned package is up to date.")
+                return 0
+            log_status(f"Picked {picked.describe()}")
+            package = picked.name
+
         result = upgrade(
             project,
-            args.package,
+            package,
             test_command=test_command,
             on_status=log_status,
             on_tool_call=log_tool_call,
