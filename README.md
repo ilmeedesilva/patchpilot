@@ -13,6 +13,8 @@ Dependabot and Renovate bump version numbers. When the new version breaks your b
 
 👉 **[See the pull request it opened](https://github.com/ilmeedesilva/patchpilot-demo/pull/1)**: the description, the diff, and the verification note were all written by patchpilot.
 
+🤖 **[See a PR it opened on its own](https://github.com/ilmeedesilva/patchpilot-demo/pull/3)**: the [GitHub Action](#use-it-in-github-actions) picked an outdated package (marshmallow 3 → 4), fixed the code, and opened this PR as `github-actions[bot]`.
+
 ✍️ **[Read the write-up](https://dev.to/ilmeedesilva/i-built-an-ai-agent-that-fixes-the-code-a-dependency-upgrade-breaks-2664)**: how it works and what I learned building it.
 
 ```console
@@ -57,7 +59,10 @@ cd your-project                          # a git repo with a test suite
 patchpilot analyze .                     # read-only report: what's outdated, what's risky
 patchpilot upgrade . pydantic            # upgrade + fix, committed to a new branch
 patchpilot upgrade . pydantic --pr       # ...and open a pull request
+patchpilot upgrade . --auto --pr         # let patchpilot pick the next outdated package
 ```
+
+Or let it run every week by itself: see [Use it in GitHub Actions](#use-it-in-github-actions).
 
 Each run uses Anthropic API credit. The amount depends on the size of the project and how much breaks.
 
@@ -67,7 +72,7 @@ Each run uses Anthropic API credit. The amount depends on the size of the projec
 
 Reads your dependency files, checks PyPI for the latest versions and runs your tests once, then prints a Markdown report. It covers what's outdated, which upgrades are major-version jumps likely to need code changes, and a suggested order. It changes nothing.
 
-### `patchpilot upgrade <project> <package>`
+### `patchpilot upgrade <project> <package>` or `--auto`
 
 1. Checks that `<package>` really is a dependency of `<project>`. If it's declared in a subfolder instead, it tells you which one.
 2. Makes a separate checkout of your repo (a git worktree) on a new branch, `patchpilot/upgrade-<package>`. **Your working copy is never touched.**
@@ -79,10 +84,59 @@ Review the result with `git diff HEAD...patchpilot/upgrade-<package>`, then merg
 
 | Option | |
 |---|---|
+| `--auto` | Pick the package for you instead of naming it: one whose newest release is outside the range you declared and that doesn't already have a `patchpilot/upgrade-*` branch, locally or on GitHub. The choice is made by plain code, not the AI. If nothing needs upgrading, it says so and exits successfully. |
+| `--prefer smallest` | With `--auto`: start with the `smallest` version jump (the default, and the safest) or the `largest`. |
 | `--pr` | Push the branch and open a GitHub pull request. If the tests still fail, it's opened as a **draft**. Uses the [GitHub CLI](https://cli.github.com/), so patchpilot never handles a GitHub token. |
 | `--test-command "..."` | How to run your tests (default: `python -m pytest -q`). |
 | `--image python:3.11-slim` | Docker image to run in. Match it to your project's Python version (default: `python:3.13-slim`). |
 | `--no-docker` | Use a local virtualenv instead of Docker. Faster, but your project's code runs directly on your machine. |
+
+## Use it in GitHub Actions
+
+Add this file to your repo as `.github/workflows/patchpilot.yml`. Every Monday, patchpilot picks the next outdated package, upgrades it, fixes your code, and opens a pull request:
+
+```yaml
+name: patchpilot
+
+on:
+  schedule:
+    - cron: "0 6 * * 1"  # every Monday at 06:00 UTC
+  workflow_dispatch:      # adds a "Run workflow" button on the Actions tab
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: patchpilot
+
+jobs:
+  upgrade:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: ilmeedesilva/patchpilot@v0.2.0
+        with:
+          anthropic-api-key: ${{ secrets.ANTHROPIC_API_KEY }}
+```
+
+Then, in your repo's settings:
+
+1. **Secrets and variables → Actions**: add a secret named `ANTHROPIC_API_KEY`.
+2. **Actions → General → Workflow permissions**: tick **Allow GitHub Actions to create and approve pull requests**.
+
+Runs with nothing new to upgrade finish in seconds and don't call the API, because packages that already have an open patchpilot PR are skipped. See it working in [patchpilot-demo](https://github.com/ilmeedesilva/patchpilot-demo/pull/3).
+
+| Input | Default | |
+|---|---|---|
+| `anthropic-api-key` | (required) | Your Anthropic API key, from a secret. |
+| `package` | `auto` | A package name, or `auto` to pick the next outdated one. |
+| `prefer` | `smallest` | With `auto`: `smallest` or `largest` version jump first. |
+| `working-directory` | `.` | The project folder, if it isn't the repo root. |
+| `test-command` | `python -m pytest -q` | How to run your tests. |
+| `python-version` | `3.13` | Your project's Python version (picks the `python:<version>-slim` image). |
+| `sandbox` | `docker` | `docker` runs your project's code in a container that can't see your API key or GitHub token. `none` runs it on the runner directly. |
+| `github-token` | the workflow's token | PRs opened with the default token don't trigger your other workflows (a GitHub rule). To have CI run on them, pass a fine-grained token with contents and pull-request write access, and give the same token to `actions/checkout`. |
 
 ## How it works
 
@@ -143,7 +197,7 @@ The agent loop and your API key never enter the container. These properties are 
 
 ## Roadmap
 
-- [ ] GitHub Action: run weekly and open PRs automatically
+- [x] GitHub Action: run weekly and open PRs automatically
 - [ ] Upgrade several packages in one run, ordered by risk
 - [ ] Turn off the sandbox's network access while tests run
 - [ ] uv and Poetry lockfile support
