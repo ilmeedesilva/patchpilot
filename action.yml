@@ -1,4 +1,4 @@
-name: patchpilot
+name: patchpilot dependency upgrader
 description: Upgrade an outdated Python dependency, fix the code that breaks, and open a pull request.
 author: Ilmee De Silva
 branding:
