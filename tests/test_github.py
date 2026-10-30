@@ -12,7 +12,7 @@ from patchpilot.tools import edit_file
 from patchpilot.upgrade import upgrade
 
 FAKE_GH = """#!/bin/sh
-if [ "$1" = "auth" ]; then exit 0; fi
+if [ "$1" = "auth" ]; then exit "${GH_AUTH_EXIT:-0}"; fi
 printf '%s\\n' "$@" > "$GH_ARGS_FILE"
 echo "Creating pull request for patchpilot/upgrade-demo into main"
 echo "https://github.com/test/repo/pull/7"
@@ -109,3 +109,15 @@ def test_needs_the_gh_cli(repo, monkeypatch):
     monkeypatch.setattr(github.shutil, "which", lambda name: None)
     with pytest.raises(GitHubError, match="needs the GitHub CLI"):
         github.check_ready(work, "patchpilot/upgrade-demo")
+
+
+def test_needs_a_login_or_a_token(repo, monkeypatch):
+    work, _, _ = repo
+    monkeypatch.setenv("GH_AUTH_EXIT", "1")
+    monkeypatch.delenv("GH_TOKEN", raising=False)
+    monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+    with pytest.raises(GitHubError, match="gh auth login"):
+        github.check_ready(work, "patchpilot/upgrade-demo")
+
+    monkeypatch.setenv("GH_TOKEN", "token-from-actions")
+    assert github.check_ready(work, "patchpilot/upgrade-demo") == "main"

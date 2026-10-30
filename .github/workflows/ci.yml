@@ -20,3 +20,15 @@ jobs:
       - run: ruff check .
       - run: ruff format --check .
       - run: pytest -q
+
+  # Runs the action itself on a project with nothing to upgrade, so it never calls Claude.
+  action:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./
+        with:
+          anthropic-api-key: not-needed
+          working-directory: tests/fixtures/up-to-date

@@ -6,6 +6,7 @@ whatever account the user already logged in with (`gh auth login`).
 
 from __future__ import annotations
 
+import os
 import shutil
 import subprocess
 from pathlib import Path
@@ -28,7 +29,11 @@ def check_ready(repo_root: Path, branch: str, remote: str = "origin") -> str:
         raise GitHubError(
             "--pr needs the GitHub CLI. Install it (brew install gh) and run: gh auth login"
         )
-    if subprocess.run(["gh", "auth", "status"], capture_output=True).returncode != 0:
+    # In GitHub Actions the token comes from the environment, and `gh auth status` can
+    # reject a workflow token that's perfectly able to push and open PRs.
+    has_token = os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN")
+    logged_in = subprocess.run(["gh", "auth", "status"], capture_output=True).returncode == 0
+    if not (has_token or logged_in):
         raise GitHubError("You're not logged in to the GitHub CLI. Run: gh auth login")
 
     remotes = _run(["git", "remote"], repo_root).split()

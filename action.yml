@@ -1,0 +1,87 @@
+name: patchpilot
+description: Upgrade an outdated Python dependency, fix the code that breaks, and open a pull request.
+author: Ilmee De Silva
+branding:
+  icon: package
+  color: blue
+
+inputs:
+  anthropic-api-key:
+    description: Anthropic API key. Store it as a repository secret.
+    required: true
+  package:
+    description: Package to upgrade, or "auto" to pick the next outdated one.
+    default: auto
+  prefer:
+    description: With package "auto", start with the "smallest" or "largest" version jump.
+    default: smallest
+  working-directory:
+    description: Folder of the project to upgrade, relative to the repository root.
+    default: .
+  test-command:
+    description: Command that runs the project's tests.
+    default: python -m pytest -q
+  python-version:
+    description: Python version the project runs on (picks the python:<version>-slim image).
+    default: "3.13"
+  sandbox:
+    description: >-
+      "docker" (default) runs the project's code in a locked-down container that can't see
+      your API key or GitHub token. "none" runs it directly on the runner; needs Python 3.11+.
+    default: docker
+  github-token:
+    description: >-
+      Token used to push the branch and open the PR. PRs opened with the default token
+      don't trigger other workflows; pass a fine-grained token if you need CI to run on them.
+    default: ${{ github.token }}
+
+runs:
+  using: composite
+  steps:
+    - if: inputs.sandbox == 'none'
+      uses: actions/setup-python@v5
+      with:
+        python-version: ${{ inputs.python-version }}
+
+    - name: Install patchpilot
+      shell: bash
+      env:
+        ACTION_PATH: ${{ github.action_path }}
+        SANDBOX: ${{ inputs.sandbox }}
+      run: |
+        # Install the same version of patchpilot as this action's ref.
+        if [ "$SANDBOX" = none ]; then
+          pipx install --python python "$ACTION_PATH"
+        else
+          pipx install "$ACTION_PATH"
+        fi
+
+    - name: Upgrade and open a pull request
+      shell: bash
+      env:
+        ANTHROPIC_API_KEY: ${{ inputs.anthropic-api-key }}
+        GH_TOKEN: ${{ inputs.github-token }}
+        GIT_AUTHOR_NAME: github-actions[bot]
+        GIT_AUTHOR_EMAIL: 41898282+github-actions[bot]@users.noreply.github.com
+        GIT_COMMITTER_NAME: github-actions[bot]
+        GIT_COMMITTER_EMAIL: 41898282+github-actions[bot]@users.noreply.github.com
+        PACKAGE: ${{ inputs.package }}
+        PREFER: ${{ inputs.prefer }}
+        PROJECT: ${{ inputs.working-directory }}
+        TEST_COMMAND: ${{ inputs.test-command }}
+        PYTHON_VERSION: ${{ inputs.python-version }}
+        SANDBOX: ${{ inputs.sandbox }}
+      # Inputs are passed through env, never pasted into the script, so they can't inject shell.
+      run: |
+        args=(upgrade "$PROJECT" --pr --test-command "$TEST_COMMAND")
+        if [ "$PACKAGE" = auto ]; then
+          args+=(--auto --prefer "$PREFER")
+        else
+          args+=("$PACKAGE")
+        fi
+        case "$SANDBOX" in
+          docker) args+=(--image "python:$PYTHON_VERSION-slim") ;;
+          none) args+=(--no-docker) ;;
+          *) echo "::error::sandbox must be 'docker' or 'none', not '$SANDBOX'"; exit 1 ;;
+        esac
+        patchpilot "${args[@]}" | tee -a "$GITHUB_STEP_SUMMARY"
