@@ -153,6 +153,10 @@ def check_declared(project: Path, package: str, repo_root: Path) -> None:
     raise UpgradeError(message)
 
 
+def git_root(project: Path) -> Path:
+    return Path(_git("rev-parse", "--show-toplevel", cwd=project)).resolve()
+
+
 def upgrade(
     project: Path,
     package: str,
@@ -165,7 +169,7 @@ def upgrade(
 ) -> UpgradeResult:
     test_command = test_command or DEFAULT_TEST_COMMAND
     project = project.resolve()
-    repo_root = Path(_git("rev-parse", "--show-toplevel", cwd=project)).resolve()
+    repo_root = git_root(project)
     project_rel = project.relative_to(repo_root)
     check_declared(project, package, repo_root)
     branch = f"patchpilot/upgrade-{package.lower()}"
